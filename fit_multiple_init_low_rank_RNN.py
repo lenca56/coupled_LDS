@@ -22,7 +22,7 @@ for K1,K2 in [(2,1),(3,1),(5,2)]:
         df.loc[z, 'simulation'] = simulation
         z += 1 
 
-idx = 0 #int(os.environ["SLURM_ARRAY_TASK_ID"])
+idx = int(os.environ["SLURM_ARRAY_TASK_ID"])
 K1 = df.loc[idx, 'K1']
 K2 = df.loc[idx, 'K2']
 simulation = df.loc[idx, 'simulation']
@@ -35,7 +35,7 @@ K = K1 + K2
 D = 50
 M = 2
 LDS = coupled_LDS(D, K1, K2, M)
-max_iter = 1 #300
+max_iter = 300
 
 param = np.load(f'models/K1={K1}_K2={K2}_true_parameters_and_data_low_rank.npz')
 u=param['u']
