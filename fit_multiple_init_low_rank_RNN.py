@@ -35,7 +35,7 @@ K = K1 + K2
 D = 50
 M = 2
 LDS = coupled_LDS(D, K1, K2, M)
-max_iter = 1 #300
+max_iter = 300
 
 param = np.load(f'models/K1={K1}_K2={K2}_true_parameters_and_data_low_rank.npz')
 u=param['u']
