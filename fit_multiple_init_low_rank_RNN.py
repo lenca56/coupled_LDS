@@ -28,7 +28,7 @@ K2 = df.loc[idx, 'K2']
 simulation = df.loc[idx, 'simulation']
 np.random.seed(simulation)
 
-S = 1000
+S = 500
 max_S = 100
 T = 100
 K = K1 + K2
