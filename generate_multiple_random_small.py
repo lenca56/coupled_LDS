@@ -37,7 +37,7 @@ for K1 in [1,2,3]:
         # generate known inputs 
         u = LDS.generate_inputs(S,T)
 
-        true_B, true_Q, true_mu0, true_Q0, true_C, true_d, true_R = LDS.generate_other_parameters()
+        true_B, true_Q, true_mu0, true_Q0, true_C, true_d, true_R = LDS.generate_other_parameters(true_A, u)
         true_x, true_y = LDS.generate_latents_and_observations(S, T, u, true_A, true_B, true_Q, true_mu0, true_Q0, true_C, true_d, true_R)
 
         np.savez(f'models/K1={K1}_K2={K2}_true_parameters_and_data_random', u=u, true_x=true_x, true_y=true_y, true_A=true_A, true_B=true_B, true_Q=true_Q, true_mu0=true_mu0, true_Q0=true_Q0, true_C=true_C, true_d=true_d, true_R=true_R)
