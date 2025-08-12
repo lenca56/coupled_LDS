@@ -3,6 +3,7 @@ import scipy.stats as stats
 from numpy.random import Generator, PCG64
 import utils
 from scipy.optimize import minimize, Bounds
+import scipy
 import sys
 
 import autograd.numpy as anp
@@ -107,7 +108,7 @@ class coupled_LDS():
         #     raise Exception ('Need to include other options that constant inputs')
         return u
     
-    def generate_other_parameters(self):
+    def generate_other_parameters(self, A, u):
         ''' 
 
         generates parameters except dynamics matrix A and inputs u 
@@ -144,7 +145,7 @@ class coupled_LDS():
         B[:self.K1,:] = np.random.normal(0,1, size=(self.K1,self.M)) # inputs only arrive in system 1
 
         # Q is diagonal for now
-        Q = np.diag(np.random.uniform(0.1, self.K/2, self.K))
+        Q = np.diag(np.random.uniform(0.01, 0.1, self.K))
         Q += 1e-8 * np.eye(Q.shape[0])
         
         # generate an orthonormal matrix C to actually be a projection matrix
@@ -158,11 +159,16 @@ class coupled_LDS():
         R = 0.5 * (R + R.T) # to make symmetric
         R += 1e-8 * np.eye(R.shape[0])
 
-        mu0 = np.random.normal(0, 0.1, (self.K))
-        Q0 = np.random.normal(1, 0.2, (self.K, self.K))
-        Q0 = np.dot(Q0, Q0.T) # to make P.S.D
-        Q0 = 0.5 * (Q0 + Q0.T) # to make symmetric
-        Q0 += 1e-8 * np.eye(Q0.shape[0])
+        Q0 = scipy.linalg.solve_discrete_lyapunov(A, Q)
+        # mu0_input1 = scipy.linalg.solve(np.eye(K)-true_A, true_B @ u[0,-1])
+        # mu0_input2 = scipy.linalg.solve(np.eye(K)-true_A, true_B @ u[-1,-1])
+        mu0 = 0.5 * (scipy.linalg.solve(np.eye(self.K)-A, B @ u[0,-1]) + scipy.linalg.solve(np.eye(self.K)-A, B @ u[-1,-1]))
+
+        # mu0 = np.random.normal(0, 0.1, (self.K))
+        # Q0 = np.random.normal(1, 0.2, (self.K, self.K))
+        # Q0 = np.dot(Q0, Q0.T) # to make P.S.D
+        # Q0 = 0.5 * (Q0 + Q0.T) # to make symmetric
+        # Q0 += 1e-8 * np.eye(Q0.shape[0])
         
         return  B, Q, mu0, Q0, C, d, R
     

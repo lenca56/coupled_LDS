@@ -28,14 +28,14 @@ K2 = df.loc[idx, 'K2']
 simulation = df.loc[idx, 'simulation']
 np.random.seed(simulation)
 
-S = 500
+S = 200
 max_S = 100
 T = 100
 K = K1 + K2
 D = 50
 M = 2
 LDS = coupled_LDS(D, K1, K2, M)
-max_iter = 300
+max_iter = 1000
 
 param = np.load(f'models/K1={K1}_K2={K2}_true_parameters_and_data_low_rank.npz')
 u=param['u']
@@ -72,7 +72,7 @@ elif simulation == 1: # C PCA + A REG + SCHUR
     A_Schur, V = sl.schur(A_REG.T, output='real')
     A_Schur = A_Schur.T
 
-    init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R = LDS.generate_other_parameters()
+    init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R = LDS.generate_other_parameters(true_A, u)
     ecll_new, ecll_old, elbo, ll, A, B, Q , mu0, Q0, C, d, R  = LDS.fit_EM(u, true_y, A_Schur, init_B, init_Q, init_mu0, init_Q0, C_PCA, init_d, init_R, max_iter=max_iter, verbosity=0)
 
 elif simulation == 2:   # Ho-Kalman SSID: C Ortho + A Schur
@@ -89,7 +89,9 @@ elif simulation == 2:   # Ho-Kalman SSID: C Ortho + A Schur
     A_Schur, V = sl.schur(A_hat.T, output='real')
     A_Schur = A_Schur.T
 
-    init_B, init_Q, init_mu0, init_Q0, _, init_d, init_R = LDS.generate_other_parameters()
+    # NEED TO DO THAT SCHUR TRANSFORMATION FOR C AS WELL?
+
+    init_B, init_Q, init_mu0, init_Q0, _, init_d, init_R = LDS.generate_other_parameters(true_A, u)
     ecll_new, ecll_old, elbo, ll, A, B, Q , mu0, Q0, C, d, R  = LDS.fit_EM(u, true_y, A_Schur, init_B, init_Q, init_mu0, init_Q0, C_orth, init_d, init_R, max_iter=max_iter, verbosity=0)
 
 elif simulation >=3:
@@ -97,7 +99,7 @@ elif simulation >=3:
     eigvals2_init = generate_eigenvalues(K2, R=1) 
     init_A = LDS.generate_dynamics_matrix(eigvals1_init, eigvals2_init, disconnected=False)
 
-    init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R = LDS.generate_other_parameters()
+    init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R = LDS.generate_other_parameters(true_A, u)
     ecll_new, ecll_old, elbo, ll, A, B, Q , mu0, Q0, C, d, R  = LDS.fit_EM(u, true_y, init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R, max_iter=max_iter, verbosity=0)
         
 np.savez(f'models/K1={K1}_K2={K2}_fitted_param_low_rank_simulation={simulation}', ecll_new=ecll_new, ecll_old=ecll_old, elbo=elbo, ll=ll, A=A, B=B, Q=Q , mu0=mu0, Q0=Q0, C=C, d=d, R=R)

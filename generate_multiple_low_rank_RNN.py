@@ -16,7 +16,7 @@ from coupled_LDS import *
 z = 0
 for K1,K2 in [(2,1),(3,1),(5,2)]:
 
-    S = 1000
+    S = 200
     T = 100
     K = K1 + K2
     D = 50
