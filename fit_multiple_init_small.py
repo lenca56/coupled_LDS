@@ -15,13 +15,12 @@ from coupled_LDS import *
 
 df = pd.DataFrame(columns=['K1','K2','simulation']) # in total z=0,269 
 z = 0
-for K1 in [1,2,3]:
-    for K2 in [1,2,3]:
-        for simulation in range(30):
-            df.loc[z, 'K1'] = K1
-            df.loc[z, 'K2'] = K2
-            df.loc[z, 'simulation'] = simulation
-            z += 1 
+for K1,K2 in [(3,1),(1,3),(2,2)]:
+    for simulation in range(30):
+        df.loc[z, 'K1'] = K1
+        df.loc[z, 'K2'] = K2
+        df.loc[z, 'simulation'] = simulation
+        z += 1 
 
 idx = int(os.environ["SLURM_ARRAY_TASK_ID"])
 K1 = df.loc[idx, 'K1']

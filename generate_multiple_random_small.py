@@ -15,32 +15,31 @@ from coupled_LDS import *
 from EI_subspace_RNN import * 
 
 z = 0
-for K1 in [1,2,3]:
-    for K2 in [1,2,3]:
+for K1,K2 in [(3,1),(1,3),(2,2)]:
 
-        S = 200
-        T = 100
-        K = K1 + K2
-        D = 50
-        M = 2
+    S = 200
+    T = 100
+    K = K1 + K2
+    D = 50
+    M = 2
 
 
-        LDS = coupled_LDS(D, K1, K2, M)    
-        # generate known inputs 
-        u = LDS.generate_inputs(S,T)
+    LDS = coupled_LDS(D, K1, K2, M)    
+    # generate known inputs 
+    u = LDS.generate_inputs(S,T)
 
-        # generate complete random param
-        eigvals1 = generate_eigenvalues(K1, R=1) # in disc of radius R = 1
-        eigvals2 = generate_eigenvalues(K2, R=1) 
-        true_A = LDS.generate_dynamics_matrix(eigvals1, eigvals2, disconnected=False)
+    # generate complete random param
+    eigvals1 = generate_eigenvalues(K1, R=1) # in disc of radius R = 1
+    eigvals2 = generate_eigenvalues(K2, R=1) 
+    true_A = LDS.generate_dynamics_matrix(eigvals1, eigvals2, disconnected=False)
 
-        # generate known inputs 
-        u = LDS.generate_inputs(S,T)
+    # generate known inputs 
+    u = LDS.generate_inputs(S,T)
 
-        true_B, true_Q, true_mu0, true_Q0, true_C, true_d, true_R = LDS.generate_other_parameters(true_A, u)
-        true_x, true_y = LDS.generate_latents_and_observations(S, T, u, true_A, true_B, true_Q, true_mu0, true_Q0, true_C, true_d, true_R)
+    true_B, true_Q, true_mu0, true_Q0, true_C, true_d, true_R = LDS.generate_other_parameters(true_A, u)
+    true_x, true_y = LDS.generate_latents_and_observations(S, T, u, true_A, true_B, true_Q, true_mu0, true_Q0, true_C, true_d, true_R)
 
-        np.savez(f'models/K1={K1}_K2={K2}_true_parameters_and_data_random', u=u, true_x=true_x, true_y=true_y, true_A=true_A, true_B=true_B, true_Q=true_Q, true_mu0=true_mu0, true_Q0=true_Q0, true_C=true_C, true_d=true_d, true_R=true_R)
+    np.savez(f'models/K1={K1}_K2={K2}_true_parameters_and_data_random', u=u, true_x=true_x, true_y=true_y, true_A=true_A, true_B=true_B, true_Q=true_Q, true_mu0=true_mu0, true_Q0=true_Q0, true_C=true_C, true_d=true_d, true_R=true_R)
 
 
 
