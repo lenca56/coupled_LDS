@@ -145,7 +145,7 @@ class coupled_LDS():
         B[:self.K1,:] = np.random.normal(0,1, size=(self.K1,self.M)) # inputs only arrive in system 1
 
         # Q is diagonal for now
-        Q = np.diag(np.random.uniform(0.01, 0.1, self.K))
+        Q = np.diag(np.random.uniform(0.1, 1, self.K))
         Q += 1e-8 * np.eye(Q.shape[0])
         
         # generate an orthonormal matrix C to actually be a projection matrix
@@ -307,9 +307,9 @@ class coupled_LDS():
         T = y.shape[1]
         M1, M1_T, M_next, Y1, Y2, Y_tilde, M_first, M_last, U1_T, U_tilde, U_delta = self.compute_auxillary_matrices_M_step(u, y, m, cov, cov_next)
         
-        # updates first latent (average over different trials/sessions S)
-        mu0 = np.mean(m[:,0], axis=0)
-        Q0 = 1/S * (M_first - np.outer(np.sum(m[:,0], axis=0), mu0)- np.outer(mu0, np.sum(m[:,0], axis=0)) + S * np.outer(mu0,mu0.T))
+        # # updates first latent (average over different trials/sessions S)
+        # mu0 = np.mean(m[:,0], axis=0)
+        # Q0 = 1/S * (M_first - np.outer(np.sum(m[:,0], axis=0), mu0)- np.outer(mu0, np.sum(m[:,0], axis=0)) + S * np.outer(mu0,mu0.T))
 
         # optimize over C
         C_anp = anp.asarray(C)
