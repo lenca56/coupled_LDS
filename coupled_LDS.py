@@ -450,7 +450,7 @@ class coupled_LDS():
         ll = np.zeros((max_iter, S))
 
         for iter in range(max_iter):
-            if iter % 10 == 0:
+            if iter % 100 == 0:
                 print(iter)
 
             m = np.zeros((S, T, self.K))

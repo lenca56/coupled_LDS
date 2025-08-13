@@ -22,11 +22,15 @@ for K1,K2 in [(3,1),(1,3),(2,2)]:
         df.loc[z, 'simulation'] = simulation
         z += 1 
 
-idx = int(os.environ["SLURM_ARRAY_TASK_ID"])
+idx = 60 #int(os.environ["SLURM_ARRAY_TASK_ID"])
 K1 = df.loc[idx, 'K1']
 K2 = df.loc[idx, 'K2']
 simulation = df.loc[idx, 'simulation']
 np.random.seed(simulation)
+
+print(f'K1={K1}')
+print(f'K2={K2}')
+print(f'simulation={simulation}')
 
 S = 200
 max_S = 200
@@ -35,7 +39,7 @@ K = K1 + K2
 D = 50
 M = 2
 LDS = coupled_LDS(D, K1, K2, M)
-max_iter = 1000
+max_iter = 10 #1000
 
 param = np.load(f'models/K1={K1}_K2={K2}_true_parameters_and_data_random.npz')
 u=param['u']
@@ -100,5 +104,5 @@ elif simulation >=3:
     init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R = LDS.generate_other_parameters(true_A, u)
     ecll_new, ecll_old, elbo, ll, A, B, Q , mu0, Q0, C, d, R  = LDS.fit_EM(u, true_y, init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R, max_iter=max_iter, verbosity=0)
         
-np.savez(f'models/K1={K1}_K2={K2}_fitted_param_simulation={simulation}', ecll_new=ecll_new, ecll_old=ecll_old, elbo=elbo, ll=ll, A=A, B=B, Q=Q , mu0=mu0, Q0=Q0, C=C, d=d, R=R)
+np.savez(f'models/K1={K1}_K2={K2}_fitted_param_random_simulation={simulation}', ecll_new=ecll_new, ecll_old=ecll_old, elbo=elbo, ll=ll, A=A, B=B, Q=Q , mu0=mu0, Q0=Q0, C=C, d=d, R=R)
 
