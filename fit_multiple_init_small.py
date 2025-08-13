@@ -22,7 +22,7 @@ for K1,K2 in [(3,1),(1,3),(2,2)]:
         df.loc[z, 'simulation'] = simulation
         z += 1 
 
-idx = 60 #int(os.environ["SLURM_ARRAY_TASK_ID"])
+idx = 30 #int(os.environ["SLURM_ARRAY_TASK_ID"])
 K1 = df.loc[idx, 'K1']
 K2 = df.loc[idx, 'K2']
 simulation = df.loc[idx, 'simulation']
