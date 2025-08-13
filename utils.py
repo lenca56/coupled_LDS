@@ -2,24 +2,24 @@ import numpy as np
 import scipy.stats as stats
 import scipy.linalg
 
-def generate_eigenvalues(K, R=1):
+def generate_eigenvalues(K, R=1, r=0):
     ''' 
-        generate eigenvalue sets in disc or radius R
+        generate eigenvalue sets in disc of radius R outside disc of radius r
+        with r < R
     '''
     eigenvalues = []
     i = 0
     # generate random number in square:
     while i < K:
         x, y = np.random.uniform(-1, 1, 2)
-        if K % 2 == 1 and i == 0:
+        if K % 2 == 1 and i == 0 and x**2 >= r/R:
             eigenvalues.append(x + 0j)
             i += 1
-        elif x**2 + y**2 < 1:
+        elif x**2 + y**2 < 1 and x**2 + y**2 >= r/R:
             eigenvalues.append(x + y * 1j)
             eigenvalues.append(x - y * 1j)
             i += 2
     return np.array(eigenvalues) * R
-
 
 def build_dynamics_matrix_A(W, J):
     return J @ W @ np.linalg.pinv(J)

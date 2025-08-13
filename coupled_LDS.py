@@ -307,9 +307,9 @@ class coupled_LDS():
         T = y.shape[1]
         M1, M1_T, M_next, Y1, Y2, Y_tilde, M_first, M_last, U1_T, U_tilde, U_delta = self.compute_auxillary_matrices_M_step(u, y, m, cov, cov_next)
         
-        # # updates first latent (average over different trials/sessions S)
-        # mu0 = np.mean(m[:,0], axis=0)
-        # Q0 = 1/S * (M_first - np.outer(np.sum(m[:,0], axis=0), mu0)- np.outer(mu0, np.sum(m[:,0], axis=0)) + S * np.outer(mu0,mu0.T))
+        # updates first latent (average over different trials/sessions S)
+        mu0 = np.mean(m[:,0], axis=0)
+        Q0 = 1/S * (M_first - np.outer(np.sum(m[:,0], axis=0), mu0)- np.outer(mu0, np.sum(m[:,0], axis=0)) + S * np.outer(mu0,mu0.T))
 
         # optimize over C
         C_anp = anp.asarray(C)
@@ -474,14 +474,14 @@ class coupled_LDS():
             ecll_new[iter], _ = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
 
             # check for convergence
-            # if iter >= 1:
-            #     if np.abs(elbo[iter] - elbo[iter-1])/elbo[iter-1] < 0.00001:
-            #         elbo[iter:] = elbo[iter]
-            #         ll[iter:] = ll[iter]
-            #         ecll_old[iter:] = ecll_old[iter]
-            #         ecll_new[iter:] = ecll_new[iter]
+            if iter >= 1:
+                if np.abs(elbo[iter] - elbo[iter-1])/elbo[iter-1] < 0.000001:
+                    elbo[iter:] = elbo[iter]
+                    ll[iter:] = ll[iter]
+                    ecll_old[iter:] = ecll_old[iter]
+                    ecll_new[iter:] = ecll_new[iter]
 
-            #         break
+                    break
 
         # # compute loss and ecll and ll after last iteration
         # m = np.zeros((S, T, self.K))
