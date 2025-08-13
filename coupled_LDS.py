@@ -108,7 +108,7 @@ class coupled_LDS():
         #     raise Exception ('Need to include other options that constant inputs')
         return u
     
-    def generate_other_parameters(self, A, u):
+    def generate_other_parameters(self, A):
         ''' 
 
         generates parameters except dynamics matrix A and inputs u 
@@ -154,7 +154,7 @@ class coupled_LDS():
         C = C[:self.K,:].T
         
         d = np.random.normal(2, 1, self.D)
-        R = np.random.normal(0.25, 0.5, (self.D, self.D))
+        R = np.random.normal(0.1/np.sqrt(self.D), 0.3/np.sqrt(self.D), (self.D, self.D))
         R = np.dot(R, R.T) # to make P.S.D
         R = 0.5 * (R + R.T) # to make symmetric
         R += 1e-8 * np.eye(R.shape[0])
@@ -162,9 +162,9 @@ class coupled_LDS():
         Q0 = scipy.linalg.solve_discrete_lyapunov(A, Q)
         # mu0_input1 = scipy.linalg.solve(np.eye(K)-true_A, true_B @ u[0,-1])
         # mu0_input2 = scipy.linalg.solve(np.eye(K)-true_A, true_B @ u[-1,-1])
-        mu0 = 0.5 * (scipy.linalg.solve(np.eye(self.K)-A, B @ u[0,-1]) + scipy.linalg.solve(np.eye(self.K)-A, B @ u[-1,-1]))
+        # mu0 = 0.5 * (scipy.linalg.solve(np.eye(self.K)-A, B @ u[0,-1]) + scipy.linalg.solve(np.eye(self.K)-A, B @ u[-1,-1]))
 
-        # mu0 = np.random.normal(0, 0.1, (self.K))
+        mu0 = np.random.normal(0, 0.1, (self.K))
         # Q0 = np.random.normal(1, 0.2, (self.K, self.K))
         # Q0 = np.dot(Q0, Q0.T) # to make P.S.D
         # Q0 = 0.5 * (Q0 + Q0.T) # to make symmetric
@@ -344,6 +344,8 @@ class coupled_LDS():
 
         # update for R
         R = 1/(T*S) * (Y2 + T * S * np.outer(d,d) - np.outer(d,Y1) - np.outer(Y1,d) - Y_tilde.T @ C.T - C @ Y_tilde + np.outer(d,M1) @ C.T + C @ np.outer(M1,d) + C @ M1_T @ C.T + C @ M_last @ C.T)
+        R = 0.5 * (R + R.T) # to ensure numerical symmetry
+        R += 1e-8 * np.eye(R.shape[0]) # to ensure no decay to 0
 
         # # FOR NUMERICAL STABILITY, MIGHT HAVE TO USE scipy.linalg.solve INSTEAD OF np.linalg.inv
         # blockwise update for A
@@ -374,6 +376,8 @@ class coupled_LDS():
 
         # update for Q
         Q = 1/((T-1)*S) * (M1_T - M_first + M_last + A @ M1_T @ A.T - A @ M_next - M_next.T @ A.T + B @ U1_T @ B.T - U_delta @ B.T - B @ U_delta.T + A @ U_tilde @ B.T + B @ U_tilde.T @ A.T)
+        Q = 0.5 * (Q + Q.T) # to ensure numerical symmetry
+        Q += 1e-8 * np.eye(Q.shape[0]) # to ensure no decay to 0
     
         return A, B, Q, mu0, Q0, C, d, R
     
@@ -469,6 +473,7 @@ class coupled_LDS():
 
             ecll_new[iter], _ = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
 
+            # check for convergence
             # if iter >= 1:
             #     if np.abs(elbo[iter] - elbo[iter-1])/elbo[iter-1] < 0.00001:
             #         elbo[iter:] = elbo[iter]
