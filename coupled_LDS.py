@@ -468,7 +468,16 @@ class coupled_LDS():
             A, B, Q, mu0, Q0, C, d, R = self.modified_M_step(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next, verbosity=verbosity)
 
             ecll_new[iter], _ = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
-            
+
+            if iter >= 1:
+                if np.abs(elbo[iter] - elbo[iter-1])/elbo[iter-1] < 0.00001:
+                    elbo[iter:] = elbo[iter]
+                    ll[iter:] = ll[iter]
+                    ecll_old[iter:] = ecll_old[iter]
+                    ecll_new[iter:] = ecll_new[iter]
+
+                    break
+
         # # compute loss and ecll and ll after last iteration
         # m = np.zeros((S, T, self.K))
         # cov = np.zeros((S, T, self.K, self.K))
