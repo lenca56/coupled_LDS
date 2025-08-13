@@ -12,13 +12,19 @@ def generate_eigenvalues(K, R=1, r=0):
     # generate random number in square:
     while i < K:
         x, y = np.random.uniform(-1, 1, 2)
-        if K % 2 == 1 and i == 0 and x**2 >= r/R:
-            eigenvalues.append(x + 0j)
-            i += 1
-        elif x**2 + y**2 < 1 and x**2 + y**2 >= r/R:
-            eigenvalues.append(x + y * 1j)
-            eigenvalues.append(x - y * 1j)
-            i += 2
+        if K % 2 == 1:
+            if i == 0 and x**2 >= r/R:
+                eigenvalues.append(x + 0j)
+                i += 1
+            elif i>=1 and x**2 + y**2 < 1 and x**2 + y**2 >= r/R:
+                eigenvalues.append(x + y * 1j)
+                eigenvalues.append(x - y * 1j)
+                i += 2
+        else: # K % 2 == 0
+            if x**2 + y**2 < 1 and x**2 + y**2 >= r/R:
+                eigenvalues.append(x + y * 1j)
+                eigenvalues.append(x - y * 1j)
+                i += 2
     return np.array(eigenvalues) * R
 
 def build_dynamics_matrix_A(W, J):
