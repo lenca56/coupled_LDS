@@ -475,7 +475,7 @@ class coupled_LDS():
 
             # check for convergence
             if iter >= 1:
-                if np.abs(elbo[iter] - elbo[iter-1])/elbo[iter-1] < 0.000001:
+                if np.abs((elbo[iter] - elbo[iter-1])/elbo[iter-1]) < 0.000001:
                     elbo[iter:] = elbo[iter]
                     ll[iter:] = ll[iter]
                     ecll_old[iter:] = ecll_old[iter]
