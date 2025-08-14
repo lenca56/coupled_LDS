@@ -15,6 +15,7 @@ from coupled_LDS import *
 
 z = 0
 for K1,K2 in [(2,1),(3,1),(5,2)]:
+    print('K1={K1}')
 
     S = 200
     T = 100
@@ -32,7 +33,7 @@ for K1,K2 in [(2,1),(3,1),(5,2)]:
     true_A[:K1,:K1] = Un.T @ Mw @ Nw.T @ Un # A11
     true_A[K1:,:K1] = Um_n.T @ Mw @ Nw.T @ Un # A21
 
-    true_B, true_Q, true_mu0, true_Q0, true_C, true_d, true_R = LDS.generate_other_parameters(true_A, u)
+    true_B, true_Q, true_mu0, true_Q0, true_C, true_d, true_R = LDS.generate_other_parameters(true_A)
     true_x, true_y = LDS.generate_latents_and_observations(S, T, u, true_A, true_B, true_Q, true_mu0, true_Q0, true_C, true_d, true_R)
 
     np.savez(f'models/K1={K1}_K2={K2}_true_parameters_and_data_low_rank', u=u, true_x=true_x, true_y=true_y, true_A=true_A, true_B=true_B, true_Q=true_Q, true_mu0=true_mu0, true_Q0=true_Q0, true_C=true_C, true_d=true_d, true_R=true_R)
