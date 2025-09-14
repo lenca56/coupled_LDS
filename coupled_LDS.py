@@ -13,6 +13,60 @@ import scipy.linalg as sl
 
 anp.random.seed(42)
 
+import time
+from collections import defaultdict
+
+class Timer:
+    def __init__(self):
+        self.cum = defaultdict(float)      # cumulative seconds since beginning
+        self._open = {}                    # key -> start time
+        self.iterations = []               # list of dicts with per-iteration deltas
+        self._last_cum_snapshot = None
+
+    def start(self, key):
+        if key in self._open:
+            raise RuntimeError(f"Timer for '{key}' already started.")
+        self._open[key] = time.perf_counter()
+
+    def stop(self, key):
+        if key not in self._open:
+            raise RuntimeError(f"Timer for '{key}' was never started.")
+        self.cum[key] += time.perf_counter() - self._open.pop(key)
+
+    def snapshot_iter(self):
+        """
+        Append a per-iteration delta dict by subtracting the previous cumulative snapshot.
+        """
+        # first snapshot: treat previous as zeros
+        if self._last_cum_snapshot is None:
+            delta = dict(self.cum)
+        else:
+            delta = {k: self.cum[k] - self._last_cum_snapshot.get(k, 0.0) for k in self.cum.keys()}
+        self.iterations.append(delta)
+        self._last_cum_snapshot = dict(self.cum)
+
+class _KFTime:
+    def __init__(self): 
+        self.cum = defaultdict(float)
+        self._open = {}
+    def start(self, k):
+        if k in self._open: raise RuntimeError(f"timer '{k}' already started")
+        self._open[k] = time.perf_counter()
+    def stop(self, k):
+        if k not in self._open: raise RuntimeError(f"timer '{k}' not started")
+        self.cum[k] += time.perf_counter() - self._open.pop(k)
+
+class _MTime:
+    def __init__(self):
+        self.cum = defaultdict(float)
+        self._open = {}
+    def start(self, k):
+        if k in self._open: raise RuntimeError(f"timer '{k}' already started")
+        self._open[k] = time.perf_counter()
+    def stop(self, k):
+        if k not in self._open: raise RuntimeError(f"timer '{k}' not started")
+        self.cum[k] += time.perf_counter() - self._open.pop(k)
+
 class coupled_LDS():
     """
     Class for two-coupled LDS
@@ -192,47 +246,131 @@ class coupled_LDS():
                 y[s, i] = np.random.multivariate_normal((C @ x[s, i] + d).reshape(self.D), R)
                 
         return x, y
-
-    def Kalman_filter_E_step(self, y, u, A, B, Q , mu0, Q0, C, d, R):
-        ''' 
-        for each trial/session individually
-
-        note that inputs come in only at the second time step
-        '''
-
+        
+    def Kalman_filter_E_step(self, y, u, A, B, Q, mu0, Q0, C, d, R):
+        """
+        Times: prealloc, precompute_static, first_S, first_loglike, first_update,
+            loop_prior, loop_S, loop_loglike, loop_update
+        Cumulative seconds per label are saved in self._kf_timings['last_run'].
+        """
         T = y.shape[0]
-        
-        mu = np.zeros((T, self.K))
+        timer = _KFTime()
+
+        timer.start('prealloc')
+        mu       = np.zeros((T, self.K))
         mu_prior = np.zeros((T, self.K))
-        V = np.zeros((T, self.K, self.K))
-        V_prior = np.zeros((T, self.K, self.K))
-        norm_fact = np.zeros((T))
-        
-        # first step
-        mu_prior[0] = mu0 
-        V_prior[0] = Q0
-        V[0] = np.linalg.inv(C.T @ np.linalg.inv(R) @ C  + np.linalg.inv(V_prior[0]))
-        mu[0] = V[0] @ (C.T @ np.linalg.inv(R) @ (y[0] - d) + np.linalg.inv(V_prior[0]) @ mu_prior[0])
-        norm_fact[0] =  - 0.5 * np.log(np.linalg.det(C @ V_prior[0] @ C.T + R)) - 0.5 * (y[0] - C @ mu_prior[0] - d).T @ np.linalg.inv(C @ V_prior[0] @ C.T + R) @ (y[0] - C @ mu_prior[0] - d)
+        V        = np.zeros((T, self.K, self.K))
+        V_prior  = np.zeros((T, self.K, self.K))
+        norm_fact = np.zeros((T,))
+        timer.stop('prealloc')
 
-        for t in range (1,T):
+        # ---------- static precomputations ----------
+        timer.start('precompute_static')
+        # you’re using information-form-ish updates; cache these:
+        invR = np.linalg.inv(R)
+        Ct_invR = C.T @ invR
+        timer.stop('precompute_static')
+
+        # ---------- t = 0 ----------
+        mu_prior[0] = mu0
+        V_prior[0]  = Q0
+
+        # innovation cov S0 = C Vp C^T + R
+        timer.start('first_S')
+        S0 = C @ V_prior[0] @ C.T + R
+        timer.stop('first_S')
+
+        # log p(y0 | y_{<0})
+        timer.start('first_loglike')
+        sign, logdetS0 = np.linalg.slogdet(S0)
+        ytil0 = y[0] - C @ mu_prior[0] - d
+        norm_fact[0] = -0.5 * logdetS0 - 0.5 * (ytil0.T @ np.linalg.solve(S0, ytil0))
+        timer.stop('first_loglike')
+
+        # filter update (information form)
+        timer.start('first_update')
+        invVp0 = np.linalg.inv(V_prior[0])
+        V[0]   = np.linalg.inv(C.T @ invR @ C + invVp0)
+        mu[0]  = V[0] @ (Ct_invR @ (y[0] - d) + invVp0 @ mu_prior[0])
+        timer.stop('first_update')
+
+        # ---------- t = 1..T-1 ----------
+        for t in range(1, T):
             # prior update
+            timer.start('loop_prior')
             mu_prior[t] = A @ mu[t-1] + B @ u[t-1]
-            V_prior[t] = A @ V[t-1] @ A.T + Q
+            V_prior[t]  = A @ V[t-1] @ A.T + Q
+            timer.stop('loop_prior')
 
-            # normalizing factor = log p(y_t|y_{1:t-1}) 
-            # ignoring - 0.5 * K * np.log(2 * np.pi)
-            norm_fact[t] = - 0.5 * np.log(np.linalg.det(C @ V_prior[t] @ C.T + R)) - 0.5 * (y[t] - C @ mu_prior[t] - d).T @ np.linalg.inv(C @ V_prior[t] @ C.T + R) @ (y[t] - C @ mu_prior[t] - d)
-        
+            # innovation cov S_t
+            timer.start('loop_S')
+            St = C @ V_prior[t] @ C.T + R
+            timer.stop('loop_S')
+
+            # log p(y_t | y_{1:t-1})
+            timer.start('loop_loglike')
+            sign, logdetSt = np.linalg.slogdet(St)
+            ytil = y[t] - C @ mu_prior[t] - d
+            norm_fact[t] = -0.5 * logdetSt - 0.5 * (ytil.T @ np.linalg.solve(St, ytil))
+            timer.stop('loop_loglike')
+
             # filter update
-            V[t] = np.linalg.inv(C.T @ np.linalg.inv(R) @ C  + np.linalg.inv(V_prior[t]))
-            mu[t] = V[t] @ (C.T @ np.linalg.inv(R) @ (y[t] - d) + np.linalg.inv(V_prior[t]) @ mu_prior[t])
+            timer.start('loop_update')
+            invVpt = np.linalg.inv(V_prior[t])
+            V[t]   = np.linalg.inv(Ct_invR @ C + invVpt)
+            mu[t]  = V[t] @ (Ct_invR @ (y[t] - d) + invVpt @ mu_prior[t])
+            timer.stop('loop_update')
 
-        # marginal log likelihood p(y_{1:T})
-        ll = norm_fact.sum()
-        ll -= 0.5 * T * self.D * np.log(2 * np.pi)
+        # marginal log likelihood
+        ll = norm_fact.sum() - 0.5 * T * self.D * np.log(2 * np.pi)
+
+        # stash timings
+        if not hasattr(self, '_kf_timings'):
+            self._kf_timings = {}
+        self._kf_timings['last_run'] = dict(timer.cum)
 
         return mu, mu_prior, V, V_prior, ll
+
+    # def Kalman_filter_E_step(self, y, u, A, B, Q , mu0, Q0, C, d, R):
+    #     ''' 
+    #     for each trial/session individually
+
+    #     note that inputs come in only at the second time step
+    #     '''
+
+    #     T = y.shape[0]
+        
+    #     mu = np.zeros((T, self.K))
+    #     mu_prior = np.zeros((T, self.K))
+    #     V = np.zeros((T, self.K, self.K))
+    #     V_prior = np.zeros((T, self.K, self.K))
+    #     norm_fact = np.zeros((T))
+        
+    #     # first step
+    #     mu_prior[0] = mu0 
+    #     V_prior[0] = Q0
+    #     V[0] = np.linalg.inv(C.T @ np.linalg.inv(R) @ C  + np.linalg.inv(V_prior[0]))
+    #     mu[0] = V[0] @ (C.T @ np.linalg.inv(R) @ (y[0] - d) + np.linalg.inv(V_prior[0]) @ mu_prior[0])
+    #     norm_fact[0] =  - 0.5 * np.log(np.linalg.det(C @ V_prior[0] @ C.T + R)) - 0.5 * (y[0] - C @ mu_prior[0] - d).T @ np.linalg.inv(C @ V_prior[0] @ C.T + R) @ (y[0] - C @ mu_prior[0] - d)
+
+    #     for t in range (1,T):
+    #         # prior update
+    #         mu_prior[t] = A @ mu[t-1] + B @ u[t-1]
+    #         V_prior[t] = A @ V[t-1] @ A.T + Q
+
+    #         # normalizing factor = log p(y_t|y_{1:t-1}) 
+    #         # ignoring - 0.5 * K * np.log(2 * np.pi)
+    #         norm_fact[t] = - 0.5 * np.log(np.linalg.det(C @ V_prior[t] @ C.T + R)) - 0.5 * (y[t] - C @ mu_prior[t] - d).T @ np.linalg.inv(C @ V_prior[t] @ C.T + R) @ (y[t] - C @ mu_prior[t] - d)
+        
+    #         # filter update
+    #         V[t] = np.linalg.inv(C.T @ np.linalg.inv(R) @ C  + np.linalg.inv(V_prior[t]))
+    #         mu[t] = V[t] @ (C.T @ np.linalg.inv(R) @ (y[t] - d) + np.linalg.inv(V_prior[t]) @ mu_prior[t])
+
+    #     # marginal log likelihood p(y_{1:T})
+    #     ll = norm_fact.sum()
+    #     ll -= 0.5 * T * self.D * np.log(2 * np.pi)
+
+    #     return mu, mu_prior, V, V_prior, ll
 
     def Kalman_smoother_E_step(self, A, mu, mu_prior, V, V_prior):
         ''' 
@@ -298,88 +436,240 @@ class coupled_LDS():
     #     loss_C = np.trace(aux)
     #     return loss_C
 
-    def modified_M_step(self, u, y, A, B, Q , mu0, Q0, C, d, R, m, cov, cov_next, verbosity):
-        ''' 
-        closed-form updates for all parameters except the C
-        '''
+    def modified_M_step(self, u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next, verbosity):
+        """
+        Times: aux_mats, mu0_update, Q0_update, C_setup, C_optimize, d_update, R_update,
+            Qinv, A11_update, A21_update, A22_update, B_update, Q_update
+        Results saved in self._m_timings['last_run'] (seconds, cumulative per label).
+        """
+        timer = _MTime()
 
         S = y.shape[0]
         T = y.shape[1]
-        M1, M1_T, M_next, Y1, Y2, Y_tilde, M_first, M_last, U1_T, U_tilde, U_delta = self.compute_auxillary_matrices_M_step(u, y, m, cov, cov_next)
-        
-        # updates first latent (average over different trials/sessions S)
-        mu0 = np.mean(m[:,0], axis=0)
-        Q0 = 1/S * (M_first - np.outer(np.sum(m[:,0], axis=0), mu0)- np.outer(mu0, np.sum(m[:,0], axis=0)) + S * np.outer(mu0,mu0.T))
 
-        # optimize over C
-        C_anp = anp.asarray(C)
-        R_inv_anp   = anp.linalg.inv(R)
+        # --------- auxiliary matrices ----------
+        timer.start('aux_mats')
+        M1, M1_T, M_next, Y1, Y2, Y_tilde, M_first, M_last, U1_T, U_tilde, U_delta = \
+            self.compute_auxillary_matrices_M_step(u, y, m, cov, cov_next)
+        timer.stop('aux_mats')
+
+        # --------- initial state updates ----------
+        timer.start('mu0_update')
+        mu0 = np.mean(m[:, 0], axis=0)
+        timer.stop('mu0_update')
+
+        timer.start('Q0_update')
+        Q0 = (1.0 / S) * (
+            M_first
+            - np.outer(np.sum(m[:, 0], axis=0), mu0)
+            - np.outer(mu0, np.sum(m[:, 0], axis=0))
+            + S * np.outer(mu0, mu0.T)
+        )
+        timer.stop('Q0_update')
+
+        # --------- C optimization setup ----------
+        timer.start('C_setup')
+        C_anp      = anp.asarray(C)
+        R_inv_anp  = anp.linalg.inv(R)
         Y_tilde_anp = anp.asarray(Y_tilde)
-        M1_T_anp    = anp.asarray(M1_T)
-        M_last_anp  = anp.asarray(M_last)
-        M1_anp      = anp.asarray(M1)
-        d_anp   = anp.asarray(d)
+        M1_T_anp   = anp.asarray(M1_T)
+        M_last_anp = anp.asarray(M_last)
+        M1_anp     = anp.asarray(M1)
+        d_anp      = anp.asarray(d)
 
-        # closed form update for C
         manifold = pymanopt.manifolds.Stiefel(n=self.D, p=self.K)
+
         @pymanopt.function.autograd(manifold)
-        def loss_C(C_anp): # d, R, Y_tilde, M1, M1_T, M_last
-                ''' 
-                optimize over Stiefel manifold of orthogonal matrices
-                '''
-                # aux = - C_anp @ Yw + 0.5 * C_anp @ M1_T_anp  @ C_anp.T + 0.5 * R_inv_anp @ C @ M_last_anp @ C.T + anp.outer(C_anp @ M1_anp, dw)
-                # aux =  R_inv_anp @ (-C_anp @ Y_tilde_anp + 0.5 * C_anp @ M1_T_anp @ C_anp.T + anp.outer(C_anp @ M1_anp, d_anp))
-                loss_C =  anp.trace(-C_anp @ Y_tilde_anp @ R_inv_anp) + anp.trace (0.5 * (M1_T_anp + M_last_anp) @ C_anp.T @ R_inv_anp @ C_anp)  + anp.trace(anp.outer(C_anp @ M1_anp, d_anp @ R_inv_anp))
-                return loss_C
-        
-        # LONG TERM COULD TRY MANUAL C OPTIMIZATION WITH CONSTRAINT
+        def loss_C(C_anp):
+            # trace-based objective as in your code
+            return (
+                anp.trace(-C_anp @ Y_tilde_anp @ R_inv_anp)
+                + anp.trace(0.5 * (M1_T_anp + M_last_anp) @ C_anp.T @ R_inv_anp @ C_anp)
+                + anp.trace(anp.outer(C_anp @ M1_anp, d_anp @ R_inv_anp))
+            )
         problem = pymanopt.Problem(manifold, loss_C)
         optimizer = pymanopt.optimizers.TrustRegions(max_iterations=50, verbosity=verbosity)
-        # optimizer = pymanopt.optimizers.ConjugateGradient(max_iterations=10000, verbosity=verbosity) # SteepestDescent
+        timer.stop('C_setup')
+
+        # --------- C optimization run ----------
+        timer.start('C_optimize')
         result = optimizer.run(problem, initial_point=C_anp)
         C = np.array(result.point)
+        timer.stop('C_optimize')
 
-        # update for d
-        d = 1/(T*S) * (Y1 - C @ M1)
+        # --------- d update ----------
+        timer.start('d_update')
+        d = (Y1 - C @ M1) / (T * S)
+        timer.stop('d_update')
 
-        # update for R
-        R = 1/(T*S) * (Y2 + T * S * np.outer(d,d) - np.outer(d,Y1) - np.outer(Y1,d) - Y_tilde.T @ C.T - C @ Y_tilde + np.outer(d,M1) @ C.T + C @ np.outer(M1,d) + C @ M1_T @ C.T + C @ M_last @ C.T)
-        R = 0.5 * (R + R.T) # to ensure numerical symmetry
-        R += 1e-8 * np.eye(R.shape[0]) # to ensure no decay to 0
+        # --------- R update ----------
+        timer.start('R_update')
+        R = (Y2
+            + T * S * np.outer(d, d)
+            - np.outer(d, Y1) - np.outer(Y1, d)
+            - Y_tilde.T @ C.T - C @ Y_tilde
+            + np.outer(d, M1) @ C.T + C @ np.outer(M1, d)
+            + C @ M1_T @ C.T + C @ M_last @ C.T) / (T * S)
+        R = 0.5 * (R + R.T)
+        R += 1e-8 * np.eye(R.shape[0])
+        timer.stop('R_update')
 
-        # # FOR NUMERICAL STABILITY, MIGHT HAVE TO USE scipy.linalg.solve INSTEAD OF np.linalg.inv
-        # blockwise update for A
+        # --------- A blockwise updates (needs Qinv) ----------
+        timer.start('Qinv')
         Qinv = np.linalg.inv(Q)
-        # update for A_11
-        A[:self.K1,:self.K1] = 2 * np.linalg.inv(Qinv[:self.K1,:self.K1]+Qinv[:self.K1,:self.K1].T) @ (Qinv[:self.K1,:self.K1].T @ M_next[:self.K1,:self.K1].T + Qinv[self.K1:,:self.K1].T @ M_next[:self.K1,self.K1:].T - 
-                                0.5 * Qinv[self.K1:,:self.K1].T @ A[self.K1:,:self.K1] @ M1_T[:self.K1,:self.K1] - 0.5 * Qinv[:self.K1,self.K1:] @ A[self.K1:,:self.K1] @ M1_T[:self.K1,:self.K1] - 
-                                0.5 * Qinv[:self.K1,self.K1:] @ A[self.K1:,self.K1:] @ M1_T[self.K1:,:self.K1] - 0.5 * Qinv[self.K1:,:self.K1].T @ A[self.K1:,self.K1:] @ M1_T[self.K1:,:self.K1] 
-                                - Qinv[:self.K1,:self.K1].T @ B[:self.K1] @ U_tilde[:self.K1].T) @ np.linalg.inv(M1_T[:self.K1,:self.K1])
-        # update for A_21
-        A[self.K1:,:self.K1] = 2 * np.linalg.inv(Qinv[self.K1:,self.K1:]+Qinv[self.K1:,self.K1:].T) @ (Qinv[:self.K1,self.K1:].T @ M_next[:self.K1,:self.K1].T + Qinv[self.K1:,self.K1:].T @ M_next[:self.K1,self.K1:].T - 
-                                0.5 * Qinv[:self.K1,self.K1:].T @ A[:self.K1,:self.K1] @ M1_T[:self.K1,:self.K1] - 0.5 * Qinv[self.K1:,:self.K1] @ A[:self.K1,:self.K1] @ M1_T[:self.K1,:self.K1] - 
-                                0.5 * Qinv[self.K1:,self.K1:] @ A[self.K1:,self.K1:] @ M1_T[self.K1:,:self.K1] - 0.5 * Qinv[self.K1:,self.K1:].T @ A[self.K1:,self.K1:] @ M1_T[self.K1:,:self.K1] 
-                                - Qinv[:self.K1,self.K1:].T @ B[:self.K1] @ U_tilde[:self.K1].T) @ np.linalg.inv(M1_T[:self.K1,:self.K1])
-        # update for A_22
-        A[self.K1:,self.K1:] = 2 * np.linalg.inv(Qinv[self.K1:,self.K1:]+Qinv[self.K1:,self.K1:].T) @ (Qinv[:self.K1,self.K1:].T @ M_next[self.K1:,:self.K1].T + Qinv[self.K1:,self.K1:].T @ M_next[self.K1:,self.K1:].T - 
-                                0.5 * Qinv[:self.K1,self.K1:].T @ A[:self.K1,:self.K1] @ M1_T[:self.K1,self.K1:] - 0.5 * Qinv[self.K1:,:self.K1] @ A[:self.K1,:self.K1] @ M1_T[:self.K1,self.K1:] - 
-                                0.5 * Qinv[self.K1:,self.K1:] @ A[self.K1:,:self.K1] @ M1_T[:self.K1,self.K1:] - 0.5 * Qinv[self.K1:,self.K1:].T @ A[self.K1:,:self.K1] @ M1_T[:self.K1,self.K1:] 
-                                - Qinv[:self.K1,self.K1:].T @ B[:self.K1] @ U_tilde[self.K1:].T) @ np.linalg.inv(M1_T[self.K1:,self.K1:])
+        timer.stop('Qinv')
+
+        # A_11
+        timer.start('A11_update')
+        A[:self.K1, :self.K1] = 2 * np.linalg.inv(Qinv[:self.K1, :self.K1] + Qinv[:self.K1, :self.K1].T) @ (
+            Qinv[:self.K1, :self.K1].T @ M_next[:self.K1, :self.K1].T
+            + Qinv[self.K1:, :self.K1].T @ M_next[:self.K1, self.K1:].T
+            - 0.5 * Qinv[self.K1:, :self.K1].T @ A[self.K1:, :self.K1] @ M1_T[:self.K1, :self.K1]
+            - 0.5 * Qinv[:self.K1, self.K1:]    @ A[self.K1:, :self.K1] @ M1_T[:self.K1, :self.K1]
+            - 0.5 * Qinv[:self.K1, self.K1:]    @ A[self.K1:, self.K1:] @ M1_T[self.K1:, :self.K1]
+            - 0.5 * Qinv[self.K1:, :self.K1].T  @ A[self.K1:, self.K1:] @ M1_T[self.K1:, :self.K1]
+            - Qinv[:self.K1, :self.K1].T        @ B[:self.K1] @ U_tilde[:self.K1].T
+        ) @ np.linalg.inv(M1_T[:self.K1, :self.K1])
+        timer.stop('A11_update')
+
+        # A_21
+        timer.start('A21_update')
+        A[self.K1:, :self.K1] = 2 * np.linalg.inv(Qinv[self.K1:, self.K1:] + Qinv[self.K1:, self.K1:].T) @ (
+            Qinv[:self.K1, self.K1:].T @ M_next[:self.K1, :self.K1].T
+            + Qinv[self.K1:, self.K1:].T @ M_next[:self.K1, self.K1:].T
+            - 0.5 * Qinv[:self.K1, self.K1:].T  @ A[:self.K1, :self.K1] @ M1_T[:self.K1, :self.K1]
+            - 0.5 * Qinv[self.K1:, :self.K1]    @ A[:self.K1, :self.K1] @ M1_T[:self.K1, :self.K1]
+            - 0.5 * Qinv[self.K1:, self.K1:]    @ A[self.K1:, self.K1:] @ M1_T[self.K1:, :self.K1]
+            - 0.5 * Qinv[self.K1:, self.K1:].T  @ A[self.K1:, self.K1:] @ M1_T[self.K1:, :self.K1]
+            - Qinv[:self.K1, self.K1:].T        @ B[:self.K1] @ U_tilde[:self.K1].T
+        ) @ np.linalg.inv(M1_T[:self.K1, :self.K1])
+        timer.stop('A21_update')
+
+        # A_22
+        timer.start('A22_update')
+        A[self.K1:, self.K1:] = 2 * np.linalg.inv(Qinv[self.K1:, self.K1:] + Qinv[self.K1:, self.K1:].T) @ (
+            Qinv[:self.K1, self.K1:].T  @ M_next[self.K1:, :self.K1].T
+            + Qinv[self.K1:, self.K1:].T @ M_next[self.K1:, self.K1:].T
+            - 0.5 * Qinv[:self.K1, self.K1:].T  @ A[:self.K1, :self.K1] @ M1_T[:self.K1, self.K1:]
+            - 0.5 * Qinv[self.K1:, :self.K1]    @ A[:self.K1, :self.K1] @ M1_T[:self.K1, self.K1:]
+            - 0.5 * Qinv[self.K1:, self.K1:]    @ A[self.K1:, :self.K1] @ M1_T[:self.K1, self.K1:]
+            - 0.5 * Qinv[self.K1:, self.K1:].T  @ A[self.K1:, :self.K1] @ M1_T[:self.K1, self.K1:]
+            - Qinv[:self.K1, self.K1:].T        @ B[:self.K1] @ U_tilde[self.K1:].T
+        ) @ np.linalg.inv(M1_T[self.K1:, self.K1:])
+        timer.stop('A22_update')
+
+        # --------- B update ----------
+        timer.start('B_update')
+        B[:self.K1] = np.linalg.inv(Qinv[:self.K1, :self.K1]) @ (
+            Qinv[:self.K1, :self.K1] @ U_delta[:self.K1]
+            + Qinv[:self.K1, self.K1:] @ U_delta[self.K1:]
+            - Qinv[:self.K1, :self.K1] @ A[:self.K1, :self.K1] @ U_tilde[:self.K1]
+            - Qinv[:self.K1, self.K1:] @ A[self.K1:, :self.K1] @ U_tilde[:self.K1]
+            - Qinv[:self.K1, self.K1:] @ A[self.K1:, self.K1:] @ U_tilde[self.K1:]
+        ) @ np.linalg.inv(U1_T)
+        timer.stop('B_update')
+
+        # --------- Q update ----------
+        timer.start('Q_update')
+        Q = (M1_T - M_first + M_last
+            + A @ M1_T @ A.T
+            - A @ M_next - M_next.T @ A.T
+            + B @ U1_T @ B.T
+            - U_delta @ B.T - B @ U_delta.T
+            + A @ U_tilde @ B.T + B @ U_tilde.T @ A.T) / ((T - 1) * S)
+        Q = 0.5 * (Q + Q.T)
+        Q += 1e-8 * np.eye(Q.shape[0])
+        timer.stop('Q_update')
+
+        # stash timings
+        if not hasattr(self, '_m_timings'):
+            self._m_timings = {}
+        self._m_timings['last_run'] = dict(timer.cum)
+
+        return A, B, Q, mu0, Q0, C, d, R
+
+    # def modified_M_step(self, u, y, A, B, Q , mu0, Q0, C, d, R, m, cov, cov_next, verbosity):
+    #     ''' 
+    #     closed-form updates for all parameters except the C
+    #     '''
+
+    #     S = y.shape[0]
+    #     T = y.shape[1]
+    #     M1, M1_T, M_next, Y1, Y2, Y_tilde, M_first, M_last, U1_T, U_tilde, U_delta = self.compute_auxillary_matrices_M_step(u, y, m, cov, cov_next)
+        
+    #     # updates first latent (average over different trials/sessions S)
+    #     mu0 = np.mean(m[:,0], axis=0)
+    #     Q0 = 1/S * (M_first - np.outer(np.sum(m[:,0], axis=0), mu0)- np.outer(mu0, np.sum(m[:,0], axis=0)) + S * np.outer(mu0,mu0.T))
+
+    #     # optimize over C
+    #     C_anp = anp.asarray(C)
+    #     R_inv_anp   = anp.linalg.inv(R)
+    #     Y_tilde_anp = anp.asarray(Y_tilde)
+    #     M1_T_anp    = anp.asarray(M1_T)
+    #     M_last_anp  = anp.asarray(M_last)
+    #     M1_anp      = anp.asarray(M1)
+    #     d_anp   = anp.asarray(d)
+
+    #     # closed form update for C
+    #     manifold = pymanopt.manifolds.Stiefel(n=self.D, p=self.K)
+    #     @pymanopt.function.autograd(manifold)
+    #     def loss_C(C_anp): # d, R, Y_tilde, M1, M1_T, M_last
+    #             ''' 
+    #             optimize over Stiefel manifold of orthogonal matrices
+    #             '''
+    #             # aux = - C_anp @ Yw + 0.5 * C_anp @ M1_T_anp  @ C_anp.T + 0.5 * R_inv_anp @ C @ M_last_anp @ C.T + anp.outer(C_anp @ M1_anp, dw)
+    #             # aux =  R_inv_anp @ (-C_anp @ Y_tilde_anp + 0.5 * C_anp @ M1_T_anp @ C_anp.T + anp.outer(C_anp @ M1_anp, d_anp))
+    #             loss_C =  anp.trace(-C_anp @ Y_tilde_anp @ R_inv_anp) + anp.trace (0.5 * (M1_T_anp + M_last_anp) @ C_anp.T @ R_inv_anp @ C_anp)  + anp.trace(anp.outer(C_anp @ M1_anp, d_anp @ R_inv_anp))
+    #             return loss_C
+        
+    #     # LONG TERM COULD TRY MANUAL C OPTIMIZATION WITH CONSTRAINT
+    #     problem = pymanopt.Problem(manifold, loss_C)
+    #     optimizer = pymanopt.optimizers.TrustRegions(max_iterations=50, verbosity=verbosity)
+    #     # optimizer = pymanopt.optimizers.ConjugateGradient(max_iterations=10000, verbosity=verbosity) # SteepestDescent
+    #     result = optimizer.run(problem, initial_point=C_anp)
+    #     C = np.array(result.point)
+
+    #     # update for d
+    #     d = 1/(T*S) * (Y1 - C @ M1)
+
+    #     # update for R
+    #     R = 1/(T*S) * (Y2 + T * S * np.outer(d,d) - np.outer(d,Y1) - np.outer(Y1,d) - Y_tilde.T @ C.T - C @ Y_tilde + np.outer(d,M1) @ C.T + C @ np.outer(M1,d) + C @ M1_T @ C.T + C @ M_last @ C.T)
+    #     R = 0.5 * (R + R.T) # to ensure numerical symmetry
+    #     R += 1e-8 * np.eye(R.shape[0]) # to ensure no decay to 0
+
+    #     # # FOR NUMERICAL STABILITY, MIGHT HAVE TO USE scipy.linalg.solve INSTEAD OF np.linalg.inv
+    #     # blockwise update for A
+    #     Qinv = np.linalg.inv(Q)
+    #     # update for A_11
+    #     A[:self.K1,:self.K1] = 2 * np.linalg.inv(Qinv[:self.K1,:self.K1]+Qinv[:self.K1,:self.K1].T) @ (Qinv[:self.K1,:self.K1].T @ M_next[:self.K1,:self.K1].T + Qinv[self.K1:,:self.K1].T @ M_next[:self.K1,self.K1:].T - 
+    #                             0.5 * Qinv[self.K1:,:self.K1].T @ A[self.K1:,:self.K1] @ M1_T[:self.K1,:self.K1] - 0.5 * Qinv[:self.K1,self.K1:] @ A[self.K1:,:self.K1] @ M1_T[:self.K1,:self.K1] - 
+    #                             0.5 * Qinv[:self.K1,self.K1:] @ A[self.K1:,self.K1:] @ M1_T[self.K1:,:self.K1] - 0.5 * Qinv[self.K1:,:self.K1].T @ A[self.K1:,self.K1:] @ M1_T[self.K1:,:self.K1] 
+    #                             - Qinv[:self.K1,:self.K1].T @ B[:self.K1] @ U_tilde[:self.K1].T) @ np.linalg.inv(M1_T[:self.K1,:self.K1])
+    #     # update for A_21
+    #     A[self.K1:,:self.K1] = 2 * np.linalg.inv(Qinv[self.K1:,self.K1:]+Qinv[self.K1:,self.K1:].T) @ (Qinv[:self.K1,self.K1:].T @ M_next[:self.K1,:self.K1].T + Qinv[self.K1:,self.K1:].T @ M_next[:self.K1,self.K1:].T - 
+    #                             0.5 * Qinv[:self.K1,self.K1:].T @ A[:self.K1,:self.K1] @ M1_T[:self.K1,:self.K1] - 0.5 * Qinv[self.K1:,:self.K1] @ A[:self.K1,:self.K1] @ M1_T[:self.K1,:self.K1] - 
+    #                             0.5 * Qinv[self.K1:,self.K1:] @ A[self.K1:,self.K1:] @ M1_T[self.K1:,:self.K1] - 0.5 * Qinv[self.K1:,self.K1:].T @ A[self.K1:,self.K1:] @ M1_T[self.K1:,:self.K1] 
+    #                             - Qinv[:self.K1,self.K1:].T @ B[:self.K1] @ U_tilde[:self.K1].T) @ np.linalg.inv(M1_T[:self.K1,:self.K1])
+    #     # update for A_22
+    #     A[self.K1:,self.K1:] = 2 * np.linalg.inv(Qinv[self.K1:,self.K1:]+Qinv[self.K1:,self.K1:].T) @ (Qinv[:self.K1,self.K1:].T @ M_next[self.K1:,:self.K1].T + Qinv[self.K1:,self.K1:].T @ M_next[self.K1:,self.K1:].T - 
+    #                             0.5 * Qinv[:self.K1,self.K1:].T @ A[:self.K1,:self.K1] @ M1_T[:self.K1,self.K1:] - 0.5 * Qinv[self.K1:,:self.K1] @ A[:self.K1,:self.K1] @ M1_T[:self.K1,self.K1:] - 
+    #                             0.5 * Qinv[self.K1:,self.K1:] @ A[self.K1:,:self.K1] @ M1_T[:self.K1,self.K1:] - 0.5 * Qinv[self.K1:,self.K1:].T @ A[self.K1:,:self.K1] @ M1_T[:self.K1,self.K1:] 
+    #                             - Qinv[:self.K1,self.K1:].T @ B[:self.K1] @ U_tilde[self.K1:].T) @ np.linalg.inv(M1_T[self.K1:,self.K1:])
 
         
-        # blockwise update for B
-        # U1_T += 1e-8 * np.eye(U1_T.shape[0]) # to avoid singular matrix
-        # B = (U_delta - A @ U_tilde) @ np.linalg.inv(U1_T)
-        B[:self.K1] =  np.linalg.inv(Qinv[:self.K1,:self.K1]) @ (Qinv[:self.K1,:self.K1] @ U_delta[:self.K1] + Qinv[:self.K1,self.K1:] @ U_delta[self.K1:]
-                        - Qinv[:self.K1,:self.K1] @ A[:self.K1,:self.K1] @ U_tilde[:self.K1] - Qinv[:self.K1,self.K1:] @ A[self.K1:,:self.K1] @ U_tilde[:self.K1]
-                        - Qinv[:self.K1,self.K1:] @ A[self.K1:,self.K1:] @ U_tilde[self.K1:]) @ np.linalg.inv(U1_T)
+    #     # blockwise update for B
+    #     # U1_T += 1e-8 * np.eye(U1_T.shape[0]) # to avoid singular matrix
+    #     # B = (U_delta - A @ U_tilde) @ np.linalg.inv(U1_T)
+    #     B[:self.K1] =  np.linalg.inv(Qinv[:self.K1,:self.K1]) @ (Qinv[:self.K1,:self.K1] @ U_delta[:self.K1] + Qinv[:self.K1,self.K1:] @ U_delta[self.K1:]
+    #                     - Qinv[:self.K1,:self.K1] @ A[:self.K1,:self.K1] @ U_tilde[:self.K1] - Qinv[:self.K1,self.K1:] @ A[self.K1:,:self.K1] @ U_tilde[:self.K1]
+    #                     - Qinv[:self.K1,self.K1:] @ A[self.K1:,self.K1:] @ U_tilde[self.K1:]) @ np.linalg.inv(U1_T)
 
-        # update for Q
-        Q = 1/((T-1)*S) * (M1_T - M_first + M_last + A @ M1_T @ A.T - A @ M_next - M_next.T @ A.T + B @ U1_T @ B.T - U_delta @ B.T - B @ U_delta.T + A @ U_tilde @ B.T + B @ U_tilde.T @ A.T)
-        Q = 0.5 * (Q + Q.T) # to ensure numerical symmetry
-        Q += 1e-8 * np.eye(Q.shape[0]) # to ensure no decay to 0
+    #     # update for Q
+    #     Q = 1/((T-1)*S) * (M1_T - M_first + M_last + A @ M1_T @ A.T - A @ M_next - M_next.T @ A.T + B @ U1_T @ B.T - U_delta @ B.T - B @ U_delta.T + A @ U_tilde @ B.T + B @ U_tilde.T @ A.T)
+    #     Q = 0.5 * (Q + Q.T) # to ensure numerical symmetry
+    #     Q += 1e-8 * np.eye(Q.shape[0]) # to ensure no decay to 0
     
-        return A, B, Q, mu0, Q0, C, d, R
+    #     return A, B, Q, mu0, Q0, C, d, R
     
 
     def compute_ECLL(self, u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next):
@@ -434,66 +724,147 @@ class coupled_LDS():
         return ecll, elbo
 
     def fit_EM(self, u, y, init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R, max_iter=300, verbosity=0):
-        
-        S = y.shape[0]
-        T = y.shape[1]
+        S, T = y.shape[0], y.shape[1]
 
-        A = np.copy(init_A)
-        B = np.copy(init_B)
-        Q = np.copy(init_Q)
-        mu0 = np.copy(init_mu0)
-        Q0 = np.copy(init_Q0)
-        C = np.copy(init_C)
-        d = np.copy(init_d)
-        R = np.copy(init_R)
-        
-        # marginal log likelihood 
+        A = np.copy(init_A); B = np.copy(init_B); Q = np.copy(init_Q)
+        mu0 = np.copy(init_mu0); Q0 = np.copy(init_Q0)
+        C = np.copy(init_C); d = np.copy(init_d); R = np.copy(init_R)
+
         ecll_old = np.zeros((max_iter))
         ecll_new = np.zeros((max_iter))
-        elbo = np.zeros((max_iter))
-        ll = np.zeros((max_iter, S))
+        elbo     = np.zeros((max_iter))
+        ll       = np.zeros((max_iter, S))
+
+        timer = Timer()
 
         for iter in range(max_iter):
             if iter % 100 == 0:
                 print(iter)
 
-            m = np.zeros((S, T, self.K))
-            cov = np.zeros((S, T, self.K, self.K))
+            timer.start('alloc')
+            m        = np.zeros((S, T, self.K))
+            cov      = np.zeros((S, T, self.K, self.K))
             cov_next = np.zeros((S, T-1, self.K, self.K))
+            timer.stop('alloc')
 
-            for s in range(S): # iterate across all trials
-                # E-step
-                mu, mu_prior, V, V_prior, ll[iter, s] = self.Kalman_filter_E_step(y[s], u[s], A, B, Q, mu0, Q0, C, d, R)
+            # ---------- E-step ----------
+            timer.start('E_step_total')
+            for s in range(S):
+                timer.start('E_filter_single')
+                mu, mu_prior, V, V_prior, ll[iter, s] = self.Kalman_filter_E_step(
+                    y[s], u[s], A, B, Q, mu0, Q0, C, d, R
+                )
+                timer.stop('E_filter_single')
+
+                timer.start('E_smoother_single')
                 m[s], cov[s], cov_next[s] = self.Kalman_smoother_E_step(A, mu, mu_prior, V, V_prior)
-            
+                timer.stop('E_smoother_single')
+            timer.stop('E_step_total')
+
+            # ---------- ECLL / ELBO (before M) ----------
+            timer.start('ECLL_before_M')
             ecll_old[iter], elbo[iter] = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
-            
-            # M-step 
-            A, B, Q, mu0, Q0, C, d, R = self.modified_M_step(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next, verbosity=verbosity)
+            timer.stop('ECLL_before_M')
 
+            # ---------- M-step ----------
+            timer.start('M_step_total')
+            A, B, Q, mu0, Q0, C, d, R = self.modified_M_step(
+                u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next, verbosity=verbosity
+            )
+            timer.stop('M_step_total')
+
+            # ---------- ECLL / ELBO (after M) ----------
+            timer.start('ECLL_after_M')
             ecll_new[iter], _ = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
+            timer.stop('ECLL_after_M')
 
-            # check for convergence
+            # store per-iteration deltas
+            timer.snapshot_iter()
+
+            # convergence check (guard divide-by-zero)
             if iter >= 1:
-                if np.abs((elbo[iter] - elbo[iter-1])/elbo[iter-1]) < 0.000001:
-                    elbo[iter:] = elbo[iter]
-                    ll[iter:] = ll[iter]
+                prev = elbo[iter-1]
+                denom = prev if prev != 0 else 1.0
+                if abs((elbo[iter] - prev) / denom) < 1e-6:
+                    # freeze tails and exit
+                    elbo[iter:]     = elbo[iter]
+                    ll[iter:]       = ll[iter]
                     ecll_old[iter:] = ecll_old[iter]
                     ecll_new[iter:] = ecll_new[iter]
-
                     break
 
-        # # compute loss and ecll and ll after last iteration
-        # m = np.zeros((S, T, self.K))
-        # cov = np.zeros((S, T, self.K, self.K))
-        # cov_next = np.zeros((S, T-1, self.K, self.K))
-        # for s in range(S): # iterate across all trials
-        #     # E-step
-        #     mu, mu_prior, V, V_prior, ll[-1, s] = self.Kalman_filter_E_step(y[s], u[s], A, B, Q , mu0, Q0, C, d, R)
-        #     m[s], cov[s], cov_next[s] = self.Kalman_smoother_E_step(A, mu, mu_prior, V, V_prior)
-        # ecll_old[-1], elbo[-1] = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
+        # Expose timings without changing return signature
+        # per_iter: list of dicts (one per EM iteration) with seconds per label
+        # cum: cumulative totals across the whole run
+        self._em_timings = {
+            "per_iter": timer.iterations,
+            "cumulative": dict(timer.cum),
+            "labels": sorted(timer.cum.keys()),
+        }
+
+        return ecll_new, ecll_old, elbo, ll, A, B, Q, mu0, Q0, C, d, R
+
+    # def fit_EM(self, u, y, init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R, max_iter=300, verbosity=0):
+        
+    #     S = y.shape[0]
+    #     T = y.shape[1]
+
+    #     A = np.copy(init_A)
+    #     B = np.copy(init_B)
+    #     Q = np.copy(init_Q)
+    #     mu0 = np.copy(init_mu0)
+    #     Q0 = np.copy(init_Q0)
+    #     C = np.copy(init_C)
+    #     d = np.copy(init_d)
+    #     R = np.copy(init_R)
+        
+    #     # marginal log likelihood 
+    #     ecll_old = np.zeros((max_iter))
+    #     ecll_new = np.zeros((max_iter))
+    #     elbo = np.zeros((max_iter))
+    #     ll = np.zeros((max_iter, S))
+
+    #     for iter in range(max_iter):
+    #         if iter % 100 == 0:
+    #             print(iter)
+
+    #         m = np.zeros((S, T, self.K))
+    #         cov = np.zeros((S, T, self.K, self.K))
+    #         cov_next = np.zeros((S, T-1, self.K, self.K))
+
+    #         for s in range(S): # iterate across all trials
+    #             # E-step
+    #             mu, mu_prior, V, V_prior, ll[iter, s] = self.Kalman_filter_E_step(y[s], u[s], A, B, Q, mu0, Q0, C, d, R)
+    #             m[s], cov[s], cov_next[s] = self.Kalman_smoother_E_step(A, mu, mu_prior, V, V_prior)
             
-        return ecll_new, ecll_old, elbo, ll, A, B, Q , mu0, Q0, C, d, R
+    #         ecll_old[iter], elbo[iter] = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
+            
+    #         # M-step 
+    #         A, B, Q, mu0, Q0, C, d, R = self.modified_M_step(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next, verbosity=verbosity)
+
+    #         ecll_new[iter], _ = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
+
+    #         # check for convergence
+    #         if iter >= 1:
+    #             if np.abs((elbo[iter] - elbo[iter-1])/elbo[iter-1]) < 0.000001:
+    #                 elbo[iter:] = elbo[iter]
+    #                 ll[iter:] = ll[iter]
+    #                 ecll_old[iter:] = ecll_old[iter]
+    #                 ecll_new[iter:] = ecll_new[iter]
+
+    #                 break
+
+    #     # # compute loss and ecll and ll after last iteration
+    #     # m = np.zeros((S, T, self.K))
+    #     # cov = np.zeros((S, T, self.K, self.K))
+    #     # cov_next = np.zeros((S, T-1, self.K, self.K))
+    #     # for s in range(S): # iterate across all trials
+    #     #     # E-step
+    #     #     mu, mu_prior, V, V_prior, ll[-1, s] = self.Kalman_filter_E_step(y[s], u[s], A, B, Q , mu0, Q0, C, d, R)
+    #     #     m[s], cov[s], cov_next[s] = self.Kalman_smoother_E_step(A, mu, mu_prior, V, V_prior)
+    #     # ecll_old[-1], elbo[-1] = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
+            
+    #     return ecll_new, ecll_old, elbo, ll, A, B, Q , mu0, Q0, C, d, R
     
         # ecll = np.zeros(max_iter + 1)
         # elbo = np.zeros(max_iter + 1)

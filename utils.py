@@ -132,14 +132,12 @@ def generate_low_rank(D,K1,K2):
     G, _ = np.linalg.qr(G)  # QR decomposition, Q is the orthogonal matrix
     Um = G[:,:K1] # D x K1 orthogonal matrix
     Um_n = G[:,:K2] # D x K2 orthogonal matrix, K2 <= K1
-    # print(G[:,K2:K1].shape)
-    # print(G[:,K1:K1+K2].shape)
-    Un = np.concatenate([G[:,K2:K1],G[:,K1:K1+K2]], axis=1)
 
-    # print(np.linalg.matrix_rank(Um))
-    # print(np.linalg.matrix_rank(Un))
-    # print(np.linalg.matrix_rank(Um_n))
-    # print(np.linalg.matrix_rank(np.concatenate([Un,Um], axis=1)))
+    # R = K1 = rank of W 
+    # dim (M\N) = K2
+    # => dim (M and N) = K2 - K1
+    
+    Un = np.concatenate([G[:,K2:K1],G[:,K1:K1+K2]], axis=1)
 
     Mw = np.zeros((D,K1))
     Nw = np.zeros((D,K1))
